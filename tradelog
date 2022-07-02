@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+export POSIXLY_CORRECT=yes
+export LC_NUMERIC=en_US.UTF-8
+
+#### COMMANDS ####
+list_tick(){
+	#prints sorted and unique tickers
+	output=$(get_output | tr " " "^")
+	echo $output | tr " " "\n" | tr "^" " " | awk -F';' '{print $2}' | sort -u
+}
+
+profit(){
+	#prints total profit from transactions
+	output=$(get_output | tr " " "^")
+	local sell_value=0
+	local profit_value=0
+	local buy_value=0
+	local profit_value=0
+
+	if ! [ -z "$output" ]
+	then
+		sell_value=$(echo $output | tr " " "\n" | tr "^" " " | awk -F';' '/sell/{printf "%s*%s+",$4,$6} END{printf "%s*%s\n",$4,$6}' | bc)
+		buy_value=$(echo $output | tr " " "\n" | tr "^" " " | awk -F';' '/buy/{printf "%s*%s+",$4,$6} END{printf "%s*%s\n",$4,$6}' | bc)
+	fi
+
+	profit_value=$(echo "($sell_value)-($buy_value)" | bc)
+	printf "%.2f\n" "$profit_value"
+
+}
+
+pos(){
+	output=$(get_output | tr " " "^")
+	ticks=$(echo $output | tr " " "\n" | tr "^" " " | awk -F';' '{print $2}' | sort -u)
+	# echo $ticks
+	local max_value=0
+	local sell_value=0
+	local buy_value=0
+	local last_price=0
+	local total_value=0
+	local longest_number=0
+	local spaces=0
+
+	for item in $ticks
+	do
+		sell_value=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item;.*sell" -F';' '$0~pat{printf "%s+",$6} END{print $6}' | bc)
+		buy_value=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item;.*buy" -F';' '$0~pat{printf "%s+",$6} END{print $6}' | bc)
+		last_price=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item" -F';' '$0~pat{last=$4}END {print last}' )
+		total_value=$(echo "($buy_value-$sell_value)*$last_price" | bc)
+		max_value_comp=$(printf "%.f" $(echo "sqrt($total_value^2)" | bc ))
+		if [ $max_value -lt $max_value_comp ]
+		then
+			max_value=$max_value_comp
+		fi
+
+		if [ $longest_number -lt $(echo ${#total_value}) ]
+		then
+			longest_number="${#total_value}"
+		fi
+
+	done
+
+	for item in $ticks
+	do
+		sell_value=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item;.*sell" -F';' '$0~pat{printf "%s+",$6} END{print $6}' | bc)
+		buy_value=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item;.*buy" -F';' '$0~pat{printf "%s+",$6} END{print $6}'| bc)
+		last_price=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item" -F';' '$0~pat{last=$4}END {print last}')
+		total_value=$(echo "($buy_value-$sell_value)*$last_price" | bc)
+
+		if [ $cmd = "graph-pos" ]
+		then
+			if [ $graph_width -eq 0 ]
+			then
+				total_value=$(printf "%.f" $(echo "($total_value/1000)" | bc))
+			else
+				total_value=$(printf "%.f" $(echo "($total_value*$graph_width)/$max_value" | bc))
+			fi
+
+			if [ $total_value -gt 0 ]
+			then
+				printf "%-11s: " "$item"
+				graph=$(printf "%${total_value}s");echo ${graph// /#}
+			elif [ $total_value -eq 0 ]
+			then
+				printf "%-11s:\n" "$item"
+			elif [ $total_value -lt 0 ]
+			then
+				printf "%-11s: " "$item"
+				graph=$(printf "%${total_value}s");echo ${graph// /!}
+
+			fi
+
+		else
+			pos_array+=$(printf "%-11s: %${longest_number}s^" "$item" "$total_value")
+		fi
+	done
+
+	if [ $cmd = "pos" ]
+	then
+		printf "%s" "${pos_array[@]}"| tr "^" "\n" | sort -t ':' -k 2 -n -r
+	fi
+
+}
+
+last_price(){
+	#prints last price
+	output=$(get_output | tr " " "^")
+	ticks=$(echo $output | tr " " "\n" | tr "^" " " | awk -F';' '{print $2}' | sort -u)
+
+	for item in $ticks
+	do
+		local last_price=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item" -F';' '$0~pat{last=$4}END {print last}')
+		local last_price_array+=$(printf "%-11s: %7s^" "$item" "$last_price")
+	done
+	printf "%s" "${last_price_array[@]}" | tr "^" "\n"
+}
+
+hist_ord(){
+	output=$(get_output | tr " " "^")
+	ticks=$(echo $output | tr " " "\n" | tr "^" " " | awk -F';' '{print $2}' | sort -u)
+	local max_notr=0
+
+	if ! [ $graph_width -eq 0 ]
+	then
+		for item in $ticks
+		do
+			local notr=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item;" -F';' '$0~pat{count++}END {print count}')
+			if [ $notr -gt $max_notr ]
+			then
+				max_notr=$notr
+			fi
+		done
+		graph_scale=$(echo "$graph_width/$max_notr" | bc -l)
+		#echo $graph_scale
+		for item in $ticks
+		do
+			local notr=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item;" -F';' '$0~pat{count++}END {print count}')
+			if [ $notr -eq $max_notr ]
+			then
+				notr=$graph_width
+				printf "%s	: " "$item"
+				graph=$(printf "%${notr}s");echo ${graph// /#}
+			else
+				notr=$(echo "$notr*$graph_scale" | bc -l)
+				notr=$(printf "%.f" "$notr")
+				printf "%s	: " "$item"
+				graph=$(printf "%${notr}s");echo ${graph// /#}
+			fi
+
+		done
+
+	else
+		for item in $ticks
+		do
+			local notr=$(echo $output | tr " " "\n" | tr "^" " " | awk -v pat="$item;" -F';' '$0~pat{count++}END {print count}')
+			printf "%s	: " "$item"
+			graph=$(printf "%${notr}s");echo ${graph// /#}
+		done
+	fi
+
+}
+
+function_call(){
+	if [[ ${cmdarray[@]} =~ $cmd ]]
+		then
+			if [ $cmd = "list-tick" ]
+			then
+				# printf "command used: %s\n" "$cmd"
+				list_tick
+			elif [ $cmd = "profit" ]
+			then
+				# printf "command used: %s\n" "$cmd"
+				profit
+			elif [ $cmd = "pos" ]
+			then
+				# printf "command used: %s\n" "$cmd"
+				pos
+			elif [ $cmd = "last-price" ]
+			then
+				# printf "command used: %s\n" "$cmd"
+				last_price
+			elif [ $cmd = "hist-ord" ]
+			then
+				# printf "command used: %s\n" "$cmd"
+				hist_ord
+			elif [ $cmd = "graph-pos" ]
+			then
+				# printf "command used: %s\n" "$cmd"
+				pos
+			fi
+		else
+			echo "Command '$cmd' doesn't exist"
+			f_restore_gz
+			exit 1
+	fi
+}
+
+f_restore_gz(){
+	if ! [ -z "$restore_gz" ]
+	then
+		gzip $restore_gz
+	fi
+}
+
+get_output(){
+	if [ -z "$filename" ]
+	then
+	filename="/dev/stdin"
+	fi
+
+	if [ -z "$cmd" ]
+	then
+		for item in $filename
+		do
+			# echo $filename
+			if [ -z "$datestring_a" ] && [ -z "$datestring_b" ]
+			then
+				cat $item | grep "$pattern" | sort
+			elif [ -z "$datestring_a" ] && ! [ -z "$datestring_b" ]
+			then
+				cat $item | grep "$pattern" | sort | awk -F';' -v date="$datestring_b" '$1<date'
+			elif ! [ -z "$datestring_a" ] &&  [ -z "$datestring_b" ]
+			then
+				cat $item | grep "$pattern" | sort | awk -F';' -v date="$datestring_a" '$1>date'
+			elif ! [ -z "$datestring_a" ] && ! [ -z "$datestring_b" ]
+			then
+				cat $item | grep "$pattern" | sort | awk -F';' -v date="$datestring_a" -v date2="$datestring_b"  '$1>date && $1<date2'
+			fi
+		done
+	else
+		if [ -z "$datestring_a" ] && [ -z "$datestring_b" ]
+		then
+			cat $filename | grep "$pattern" | sort -u
+		elif [ -z "$datestring_a" ] && ! [ -z "$datestring_b" ]
+		then
+			cat $filename | grep "$pattern" | awk -F';' -v date="$datestring_b" '$1<date' | sort -u
+		elif ! [ -z "$datestring_a" ] &&  [ -z "$datestring_b" ]
+		then
+			cat $filename | grep "$pattern" | awk -F';' -v date="$datestring_a" '$1>date' | sort -u
+		elif ! [ -z "$datestring_a" ] && ! [ -z "$datestring_b" ]
+		then
+			cat $filename | grep "$pattern" | awk -F';' -v date="$datestring_a" -v date2="$datestring_b"  '$1>date && $1<date2' | sort -u
+		fi
+	fi
+}
+
+exit_if_interrupted () {
+	f_restore_gz
+  echo; echo 'Interrupted..'
+  exit 0
+}
+
+#### Variables ####
+declare -a filters_t
+
+restore_gz=""
+cmdarray=("list-tick" "profit" "pos" "last-price" "hist-ord" "graph-pos")
+par_def=("-t" "-w" "-a" "-b")
+testnumber="^[0-9]+$"
+graph_width=0
+
+#### Parameters ####
+#position of parameter
+pos=0
+for parameter in "${BASH_ARGV[@]}"
+do
+	if [[ ${BASH_ARGV[pos]} = "-h" || ${BASH_ARGV[pos]} = "--help" ]]
+	then
+		echo 'POUŽITÍ: tradelog [-h|--help] [FILTR] [PŘÍKAZ] [LOG [LOG2 [...]]
+PŘÍKAZ:
+    list-tick – výpis tickerů
+    profit – výpis celkového zisku z uzavřených pozic.
+    pos – výpis hodnot aktuálně držených pozic seřazených sestupně dle hodnoty.
+    last-price – výpis poslední známé ceny pro každý ticker.
+    hist-ord – výpis histogramu počtu transakcí dle tickeru.
+    graph-pos – výpis grafu hodnot držených pozic dle tickeru.
+
+FILTR může být kombinace následujících:
+    -a DATETIME – after: záznamy PO tomto datu (bez tohoto data). DATETIME je formátu "YYYY-MM-DD HH:MM:SS".
+    -b DATETIME – before: jsou uvažovány pouze záznamy PŘED tímto datem (bez tohoto data).
+    -t TICKER – jsou uvažovány pouze záznamy odpovídající danému tickeru. Při více výskytech přepínače se bere množina všech uvedených tickerů.
+    -w WIDTH – u výpisu grafů nastavuje jejich šířku, tedy délku nejdelšího řádku na WIDTH. Tedy, WIDTH musí být kladné celé číslo. Více výskytů přepínače je chybné spuštění.
+		'
+		f_restore_gz
+		exit 1
+
+	elif [[ ${BASH_ARGV[pos]} = "-b" ]]
+	then
+		datestring_b=${BASH_ARGV[pos-1]}
+	elif [[ ${BASH_ARGV[pos]} = "-a" ]]
+	then
+		datestring_a=${BASH_ARGV[pos-1]}
+	elif [[ ${BASH_ARGV[pos]} = "-t" ]]
+	then
+		filters_t+=("${BASH_ARGV[pos-1]}")
+	elif [[ ${BASH_ARGV[pos]} = "-w" ]]
+	then
+		if [[ ${BASH_ARGV[pos-1]} =~ $testnumber  ]]
+		then
+			graph_width=${BASH_ARGV[pos-1]}
+		else
+			echo "Positive number expected after '-w', '${BASH_ARGV[pos-1]}' given"
+			f_restore_gz
+			exit 1
+		fi
+
+	elif [[ ! "${par_def[@]}" =~ ${BASH_ARGV[pos+1]} && ! "${par_def[@]}" =~ ${BASH_ARGV[pos]} ]]
+	then
+		non_filter_par+=("${BASH_ARGV[pos]}")
+
+	elif [[ "${BASH_ARGV[pos]}" = ${BASH_ARGV[-1]} && ! "${par_def[@]}" =~ ${BASH_ARGV[pos]} ]]
+	then
+		non_filter_par+=("${BASH_ARGV[pos]}")
+
+	fi
+	((pos=$pos+1))
+done
+
+#### Check if command or file exists ####
+# echo ${non_filter_par[@]}
+local_files=$(ls)
+for item in ${non_filter_par[@]}
+do
+	# echo $item
+	if [[ -f "$item" ]]
+	then
+		filename="$filename$item "
+	else
+		if [[ "${cmdarray[@]}" =~ "$item" ]]
+		then
+			cmd="$item"
+		else
+			echo "Invalid command or file '$item' "
+			f_restore_gz
+			exit 1
+		fi
+
+	fi
+done
+
+#### check if input file has .gz suffix ####
+# echo ${filename[@]}
+for item in ${filename[@]}
+do
+	if [[ "$item" == *".gz"* ]]
+	then
+			gunzip $item
+			restore_gz="$restore_gz${item%".gz"} "
+			itemw_s=${item%".gz"}
+			filename=${filename//$item/$itemw_s}
+	fi
+done
+
+pattern=${filters_t[@]}
+pattern="${pattern// /;\\|};"
+
+#reverse filename
+for item in $filename
+do
+filename_arr+=("$item")
+done
+
+min=0
+max=$(( ${#filename_arr[@]} -1 ))
+
+while [[ min -lt max ]]
+do
+  x="${filename_arr[$min]}"
+	filename_arr[$min]="${filename_arr[$max]}"
+	filename_arr[$max]="$x"
+  (( min++, max-- ))
+done
+
+filename=$(echo ${filename_arr[@]})
+
+### TEST PRINTS OF Parameters ####
+# echo ${cmdarray[@]}
+# echo filename = $filename
+# echo cmd = $cmd
+# echo adate = $datestring_a
+# echo adatev = ${#datestring_a}
+# echo bdate = $datestring_b
+# echo bdatev = ${#datestring_b}
+# echo filterst = ${filters_t[@]}
+# echo graph_width = $graph_width
+# echo pattern = $pattern
+# echo restore_gz = $restore_gz
+### Function call ####
+
+if [ -z "$cmd" ]
+then
+	trap exit_if_interrupted SIGINT
+	get_output
+else
+	trap exit_if_interrupted SIGINT
+	function_call
+fi
+
+f_restore_gz
+exit 0
